@@ -71,11 +71,12 @@ def send_discord(title, link, category):
     )
 
     try:
+            try:
         with urllib.request.urlopen(request, timeout=20) as response:
             print(f"Discord response: {response.status}")
     except urllib.error.HTTPError as e:
-        print(f"Discord HTTP error: {e.code}")
-        print("Discord response details:", e.read().decode("utf-8", errors="replace"))
+        print(f"HTTP error code: {e.code}")
+        print(f"Error details: {e.read().decode('utf-8', errors='replace')}")
         raise
 
 
