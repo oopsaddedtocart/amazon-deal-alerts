@@ -60,10 +60,10 @@ def find_brand(title):
     return None
 
 
+
 def extract_product(link):
     node = link
 
-    # Search farther up the page for the full product card.
     for _ in range(20):
         if node is None:
             return None
@@ -77,11 +77,10 @@ def extract_product(link):
         )
         discount_match = re.search(
             r"-\s*(\d{1,3})\s*%", text
-        
+        )
+
         if heading and price_match and discount_match:
             title = heading.get_text(" ", strip=True)
-
-            # Only accept brands found in the product title.
             brand = find_brand(title)
 
             if not brand or not MULTIPACK.search(title):
@@ -96,36 +95,34 @@ def extract_product(link):
             if price > MAX_PRICE or discount < MIN_DISCOUNT:
                 node = node.parent
                 continue
-                
-                node = node.parent
-                continue
 
-            # Prefer the actual Amazon link inside the product card.
-            amazon_link = None
+            amazon_url = None
             for a in node.find_all("a", href=True):
-                host = urlparse(urljoin(BASE, a["href"])).hostname or ""
+                candidate = urljoin(BASE, a["href"])
+                host = urlparse(candidate).hostname or ""
+
                 if host == "amazon.com" or host.endswith(".amazon.com"):
-                    amazon_link = urljoin(BASE, a["href"])
+                    amazon_url = candidate
                     break
 
-            if not amazon_link:
+            if not amazon_url:
                 node = node.parent
                 continue
 
             image_url = None
             if image:
                 for attr in (
-                    "src", "data-src", "data-lazy-src",
-                    "data-original", "srcset"
+                    "src",
+                    "data-src",
+                    "data-lazy-src",
+                    "data-original",
                 ):
                     value = image.get(attr)
                     if value:
-                        # srcset may contain multiple entries.
-                        image_url = value.split(",")[0].strip().split(" ")[0]
-                        image_url = urljoin(BASE, image_url)
-                        if image_url.startswith("https://"):
+                        candidate_image = urljoin(BASE, value)
+                        if candidate_image.startswith("https://"):
+                            image_url = candidate_image
                             break
-                        image_url = None
 
             if not image_url:
                 node = node.parent
@@ -136,13 +133,14 @@ def extract_product(link):
                 "brand": brand,
                 "price": price,
                 "discount": discount,
-                "url": amazon_link,
+                "url": amazon_url,
                 "image": image_url,
             }
 
         node = node.parent
 
     return None
+
 
 
 state_file = Path("seen.json")
