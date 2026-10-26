@@ -77,16 +77,12 @@ def extract_product(link):
         )
         discount_match = re.search(
             r"-\s*(\d{1,3})\s*%", text
-        )
-
+        
         if heading and price_match and discount_match:
             title = heading.get_text(" ", strip=True)
-            # Only accept brands found in the product title.
-brand = find_brand(title)
 
-if not brand:
-    node = node.parent
-    continue
+            # Only accept brands found in the product title.
+            brand = find_brand(title)
 
             if not brand or not MULTIPACK.search(title):
                 node = node.parent
@@ -98,6 +94,9 @@ if not brand:
             discount = int(discount_match.group(1))
 
             if price > MAX_PRICE or discount < MIN_DISCOUNT:
+                node = node.parent
+                continue
+                
                 node = node.parent
                 continue
 
