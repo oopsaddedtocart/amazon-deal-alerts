@@ -1,19 +1,20 @@
 
-name: Amazon Deal Alerts
+name: Amazon Deal Finder
 
 on:
+  workflow_dispatch:
   schedule:
     - cron: "*/15 * * * *"
-  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  find-deals:
+  scan:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Get code
+      - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -21,18 +22,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install packages
-        run: pip install -r requirements.txt
-
-      - name: Find deals
+      - name: Run all six deal scanners
         env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        run: python deal_finder.py
-
-      - name: Save seen deals
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add seen.json
-          git diff --cached --quiet || git commit -m "Update seen deals"
-          git push
+          python food.py
+          python household.py
+          python toys.py
+          python electronics.py
+          python personal_care.py
+          python price_drops.py
