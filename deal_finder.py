@@ -61,6 +61,7 @@ def find_brand(title):
 
 
 
+
 def extract_product(link):
     node = link
 
@@ -68,7 +69,7 @@ def extract_product(link):
         if node is None:
             return None
 
-        text = node.get_text(" ", strip=True)
+        text = node.get_text("\n", strip=True)
         heading = node.find(["h1", "h2", "h3", "h4"])
         image = node.find("img")
 
@@ -81,7 +82,19 @@ def extract_product(link):
 
         if heading and price_match and discount_match:
             title = heading.get_text(" ", strip=True)
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+
             brand = find_brand(title)
+
+            # Brand names are often shown separately from titles.
+            if not brand:
+                for line in lines:
+                    for candidate in BRANDS:
+                        if line.casefold() == candidate.casefold():
+                            brand = candidate
+                            break
+                    if brand:
+                        break
 
             if not brand or not MULTIPACK.search(title):
                 node = node.parent
@@ -98,31 +111,27 @@ def extract_product(link):
 
             amazon_url = None
             for a in node.find_all("a", href=True):
-                candidate = urljoin(BASE, a["href"])
-                host = urlparse(candidate).hostname or ""
+                candidate_url = urljoin(BASE, a["href"])
+                host = urlparse(candidate_url).hostname or ""
 
                 if host == "amazon.com" or host.endswith(".amazon.com"):
-                    amazon_url = candidate
+                    amazon_url = candidate_url
                     break
 
-            if not amazon_url:
+            if not amazon_url or not image:
                 node = node.parent
                 continue
 
             image_url = None
-            if image:
-                for attr in (
-                    "src",
-                    "data-src",
-                    "data-lazy-src",
-                    "data-original",
-                ):
-                    value = image.get(attr)
-                    if value:
-                        candidate_image = urljoin(BASE, value)
-                        if candidate_image.startswith("https://"):
-                            image_url = candidate_image
-                            break
+            for attr in (
+                "src", "data-src", "data-lazy-src", "data-original"
+            ):
+                value = image.get(attr)
+                if value:
+                    candidate_image = urljoin(BASE, value)
+                    if candidate_image.startswith("https://"):
+                        image_url = candidate_image
+                        break
 
             if not image_url:
                 node = node.parent
@@ -140,8 +149,6 @@ def extract_product(link):
         node = node.parent
 
     return None
-
-
 
 state_file = Path("seen.json")
 seen = set(json.loads(state_file.read_text())) if state_file.exists() else set()
