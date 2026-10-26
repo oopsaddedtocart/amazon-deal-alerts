@@ -1,40 +1,22 @@
+name: Test Discord Webhook
 
-import os
-import urllib.request
-import urllib.error
-import json
+on:
+  workflow_dispatch:
 
-WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+jobs:
+  test-discord:
+    runs-on: ubuntu-latest
 
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-def main():
-    if not WEBHOOK_URL:
-        raise SystemExit(
-            "ERROR: DISCORD_WEBHOOK_URL is empty or unavailable. "
-            "The test workflow must pass the GitHub secret into this step."
-        )
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-    payload = json.dumps({
-        "content": "✅ Discord webhook test successful!",
-        "allowed_mentions": {"parse": []}
-    }).encode("utf-8")
-
-    request = urllib.request.Request(
-        WEBHOOK_URL,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST"
-    )
-
-    try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            print(f"Success! Discord returned HTTP {response.status}.")
-    except urllib.error.HTTPError as error:
-        details = error.read().decode("utf-8", errors="replace")
-        print(f"Discord returned HTTP {error.code}.")
-        print(f"Response details: {details}")
-        raise
-
-
-if __name__ == "__main__":
-    main()
+      - name: Test Discord webhook
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python test_discord.py
