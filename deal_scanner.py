@@ -47,11 +47,10 @@ def save_seen(seen):
     )
 
 
+
 def send_discord(title, link, category):
     if not WEBHOOK:
-        raise RuntimeError(
-            "DISCORD_WEBHOOK_URL secret is missing."
-        )
+        raise RuntimeError("DISCORD_WEBHOOK_URL secret is missing.")
 
     message = (
         f"**Amazon Deal Finder: {category}**\n"
@@ -71,9 +70,14 @@ def send_discord(title, link, category):
         method="POST"
     )
 
-    with urllib.request.urlopen(request, timeout=20) as response:
-        if response.status not in (200, 204):
-            raise RuntimeError("Discord alert failed.")
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            print(f"Discord response: {response.status}")
+    except urllib.error.HTTPError as e:
+        print(f"Discord HTTP error: {e.code}")
+        print("Discord response details:", e.read().decode("utf-8", errors="replace"))
+        raise
+
 
 
 def scan_category(category, keywords):
