@@ -88,7 +88,7 @@ if not brand:
     node = node.parent
     continue
 
-            if not brand:
+            if not brand or not MULTIPACK.search(title):
                 node = node.parent
                 continue
 
