@@ -8,7 +8,7 @@ from html import unescape
 
 FEED_URL = os.getenv(
     "DEAL_FEED_URL",
-    "https://www.dealnews.com/rss/todays-edition"
+  "https://dealnews.a.ssl.fastly.net/dealnews/rss/todays-edition.xml"
 )
 
 WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
