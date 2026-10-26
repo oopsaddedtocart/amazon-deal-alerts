@@ -81,20 +81,12 @@ def extract_product(link):
 
         if heading and price_match and discount_match:
             title = heading.get_text(" ", strip=True)
-            brand = find_brand(title)
+            # Only accept brands found in the product title.
+brand = find_brand(title)
 
-            # Also recognize brands listed separately in the card.
-            if not brand:
-                for candidate in BRANDS:
-                    if re.search(
-                        r"(?<![A-Za-z0-9])"
-                        + re.escape(candidate)
-                        + r"(?![A-Za-z0-9])",
-                        text,
-                        re.I,
-                    ):
-                        brand = candidate
-                        break
+if not brand:
+    node = node.parent
+    continue
 
             if not brand:
                 node = node.parent
