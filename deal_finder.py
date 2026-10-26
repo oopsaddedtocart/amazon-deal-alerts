@@ -96,7 +96,7 @@ def extract_product(link):
                         brand = candidate
                         break
 
-            if not brand or not MULTIPACK.search(title):
+            if not brand:
                 node = node.parent
                 continue
 
