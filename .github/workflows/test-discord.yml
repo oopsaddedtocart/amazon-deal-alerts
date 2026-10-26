@@ -1,12 +1,14 @@
-name: Test Discord Webhook
+name: Test Discord Connection
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test-discord:
     runs-on: ubuntu-latest
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -16,7 +18,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Run Discord test
+      - name: Test Discord webhook
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python test_discord.py
