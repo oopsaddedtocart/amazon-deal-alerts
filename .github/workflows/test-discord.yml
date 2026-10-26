@@ -1,0 +1,27 @@
+
+name: Test Discord
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send test message
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          python - <<'PY'
+          import os
+          import requests
+
+          url = os.environ["DISCORD_WEBHOOK"]
+          r = requests.post(
+              url,
+              json={"content": "✅ Amazon deal finder test: Discord connection works!"},
+              timeout=20
+          )
+          print("Discord response:", r.status_code)
+          r.raise_for_status()
+          PY
