@@ -46,6 +46,12 @@ feed_url = "https://slickdeals.net/newsearch.php?" + urlencode({
 })
 
 feed = feedparser.parse(feed_url)
+print("Feed URL:", feed_url)
+print("Feed entries found:", len(feed.entries))
+
+for entry in feed.entries[:10]:
+    print("TITLE:", entry.get("title", "No title"))
+    print("LINK:", entry.get("link", "No link"))
 if feed.bozo and not feed.entries:
     raise RuntimeError("Could not read the deal feed.")
 
