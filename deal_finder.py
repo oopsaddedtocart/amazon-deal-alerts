@@ -59,82 +59,100 @@ def find_brand(title):
             return brand
     return None
 
+
 def extract_product(link):
     node = link
 
-    # Find the nearest product card containing title, image,
-    # price and discount.
-    for _ in range(9):
+    # Search farther up the page for the full product card.
+    for _ in range(20):
         if node is None:
             return None
 
         text = node.get_text(" ", strip=True)
-        heading = node.find(["h2", "h3"])
+        heading = node.find(["h1", "h2", "h3", "h4"])
         image = node.find("img")
 
-        if (
-            heading and image
-            and re.search(r"\$\s?\d", text)
-            and re.search(r"-\s*\d{1,3}\s*%", text)
-        ):
-            break
+        price_match = re.search(
+            r"\$\s*([\d,]+(?:\.\d{1,2})?)", text
+        )
+        discount_match = re.search(
+            r"-\s*(\d{1,3})\s*%", text
+        )
+
+        if heading and price_match and discount_match:
+            title = heading.get_text(" ", strip=True)
+            brand = find_brand(title)
+
+            # Also recognize brands listed separately in the card.
+            if not brand:
+                for candidate in BRANDS:
+                    if re.search(
+                        r"(?<![A-Za-z0-9])"
+                        + re.escape(candidate)
+                        + r"(?![A-Za-z0-9])",
+                        text,
+                        re.I,
+                    ):
+                        brand = candidate
+                        break
+
+            if not brand or not MULTIPACK.search(title):
+                node = node.parent
+                continue
+
+            price = float(
+                price_match.group(1).replace(",", "")
+            )
+            discount = int(discount_match.group(1))
+
+            if price > MAX_PRICE or discount < MIN_DISCOUNT:
+                node = node.parent
+                continue
+
+            # Prefer the actual Amazon link inside the product card.
+            amazon_link = None
+            for a in node.find_all("a", href=True):
+                host = urlparse(urljoin(BASE, a["href"])).hostname or ""
+                if host == "amazon.com" or host.endswith(".amazon.com"):
+                    amazon_link = urljoin(BASE, a["href"])
+                    break
+
+            if not amazon_link:
+                node = node.parent
+                continue
+
+            image_url = None
+            if image:
+                for attr in (
+                    "src", "data-src", "data-lazy-src",
+                    "data-original", "srcset"
+                ):
+                    value = image.get(attr)
+                    if value:
+                        # srcset may contain multiple entries.
+                        image_url = value.split(",")[0].strip().split(" ")[0]
+                        image_url = urljoin(BASE, image_url)
+                        if image_url.startswith("https://"):
+                            break
+                        image_url = None
+
+            if not image_url:
+                node = node.parent
+                continue
+
+            return {
+                "title": title,
+                "brand": brand,
+                "price": price,
+                "discount": discount,
+                "url": amazon_link,
+                "image": image_url,
+            }
 
         node = node.parent
-    else:
-        return None
 
-    title = heading.get_text(" ", strip=True)
-    brand = find_brand(title)
+    return None
 
-    if not brand or not MULTIPACK.search(title):
-        return None
-
-    prices = re.findall(
-        r"\$\s?([\d,]+(?:\.\d{1,2})?)", text
-    )
-    discount_match = re.search(
-        r"-\s*(\d{1,3})\s*%", text
-    )
-
-    if not prices or not discount_match:
-        return None
-
-    price = float(prices[0].replace(",", ""))
-    discount = int(discount_match.group(1))
-
-    if price > MAX_PRICE or discount < MIN_DISCOUNT:
-        return None
-
-    href = link.get("href", "")
-    parsed = urlparse(href)
-
-    # Only use individual Amazon product links.
-    if not (
-        parsed.hostname
-        and (
-            parsed.hostname == "amazon.com"
-            or parsed.hostname.endswith(".amazon.com")
-        )
-    ):
-        return None
-
-    image_url = (
-        image.get("src")
-        or image.get("data-src")
-        or image.get("data-lazy-src")
-    )
-
-    if not image_url or not image_url.startswith("https://"):
-        return None
-
-    return {
-        "title": title,
-        "brand": brand,
-        "price": price,
-        "discount": discount,
-        "url": href,
-        "image": image_url,
-    }
 
 state_file = Path("seen.json")
 seen = set(json.loads(state_file.read_text())) if state_file.exists() else set()
