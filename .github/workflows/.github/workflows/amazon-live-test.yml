@@ -1,0 +1,24 @@
+name: Test Amazon Live Search
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-amazon:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install requests beautifulsoup4
+
+      - name: Test live Amazon listings
+        run: python test_amazon.py
