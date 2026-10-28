@@ -3,56 +3,100 @@ import re
 import json
 import hashlib
 import requests
-import feedparser
+from difflib import SequenceMatcher
 
-MAX_PRICE = 50
-MIN_DISCOUNT = 50
+# ======================================
+# SETTINGS
+# ======================================
 
-WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
+MAX_PRICE = 50.00
 
-# Add authorized RSS deal feeds here.
-FEEDS = [
-    url.strip()
-    for url in os.environ.get("DEAL_FEEDS", "").split(",")
-    if url.strip()
+# Multipack unit price must be at least
+# 60% cheaper than comparison listing.
+MIN_UNIT_SAVINGS = 60
+
+# Similarity needed for matching products
+MIN_SIMILARITY = 0.80
+
+WEBHOOK = os.environ.get(
+    "DISCORD_WEBHOOK_URL", ""
+)
+
+DATA_FILE = "amazon_products.json"
+SEEN_FILE = "seen_glitches.json"
+
+PACK_SIZES = [
+    1, 2, 4, 6, 8, 10,
+    12, 24, 36, 48
 ]
 
-SEEN_FILE = "seen_deals.json"
+# ======================================
+# PRODUCT MATCHING
+# ======================================
 
-STORES = [
-    "amazon",
-    "walmart",
-    "target",
-    "home depot",
-    "lowe's",
-    "lowes",
-]
+def clean_title(title):
+    title = title.lower()
 
-PRIORITY_WORDS = [
-    "multipack",
-    "multi-pack",
-    "6 pack",
-    "12 pack",
-    "24 pack",
-    "case",
-    "bundle",
-    "household",
-    "seasoning",
-    "detergent",
-    "cleaning",
-    "candy",
-    "grocery",
-    "toy",
-]
+    title = re.sub(
+        r"\b\d+\s?[- ]?(?:pack|pk|count|ct)\b",
+        " ",
+        title
+    )
 
-EXCLUDED_WORDS = [
-    "shirt",
-    "pants",
-    "dress",
-    "shoes",
-    "jeans",
-    "hoodie",
-]
+    title = re.sub(
+        r"[^a-z0-9 ]",
+        " ",
+        title
+    )
+
+    return " ".join(title.split())
+
+
+def similarity(a, b):
+    return SequenceMatcher(
+        None,
+        clean_title(a),
+        clean_title(b)
+    ).ratio()
+
+
+def same_seller(a, b):
+    seller_a = str(
+        a.get("seller_id", "")
+    ).strip()
+
+    seller_b = str(
+        b.get("seller_id", "")
+    ).strip()
+
+    return (
+        bool(seller_a)
+        and bool(seller_b)
+        and seller_a == seller_b
+    )
+
+
+# ======================================
+# LOAD PRODUCTS
+# ======================================
+
+def load_products():
+    if not os.path.exists(DATA_FILE):
+        print(
+            "No product data found. "
+            "Add amazon_products.json."
+        )
+        return []
+
+    with open(DATA_FILE, "r") as file:
+        products = json.load(file)
+
+    if not isinstance(products, list):
+        raise ValueError(
+            "Product data must be a list."
+        )
+
+    return products
 
 
 def load_seen():
@@ -60,129 +104,184 @@ def load_seen():
         return set()
 
     try:
-        with open(SEEN_FILE, "r") as f:
-            return set(json.load(f))
+        with open(SEEN_FILE, "r") as file:
+            return set(json.load(file))
     except (OSError, ValueError):
         return set()
 
 
 def save_seen(seen):
-    with open(SEEN_FILE, "w") as f:
-        json.dump(sorted(seen), f)
+    with open(SEEN_FILE, "w") as file:
+        json.dump(sorted(seen), file, indent=2)
 
 
-def extract_price(text):
-    matches = re.findall(
-        r"\$\s?(\d+(?:\.\d{1,2})?)",
-        text
-    )
+# ======================================
+# GLITCH DETECTION
+# ======================================
 
-    if not matches:
+def compare_products(a, b):
+
+    try:
+        price_a = float(a["price"])
+        price_b = float(b["price"])
+
+        qty_a = int(a["quantity"])
+        qty_b = int(b["quantity"])
+
+    except (KeyError, ValueError, TypeError):
         return None
 
-    return float(matches[0])
-
-
-def extract_discount(text):
-    matches = re.findall(
-        r"(\d{1,3})\s?%\s*(?:off|discount)",
-        text,
-        re.IGNORECASE
-    )
-
-    if not matches:
+    if min(price_a, price_b) <= 0:
         return None
 
-    return int(matches[0])
+    if min(qty_a, qty_b) <= 0:
+        return None
 
+    # Compare smaller and larger packs.
+    if qty_a <= qty_b:
+        small, large = a, b
+        small_price = price_a
+        large_price = price_b
+        small_qty = qty_a
+        large_qty = qty_b
+    else:
+        small, large = b, a
+        small_price = price_b
+        large_price = price_a
+        small_qty = qty_b
+        large_qty = qty_a
 
-def get_store(text):
-    text = text.lower()
+    if large_price > MAX_PRICE:
+        return None
 
-    for store in STORES:
-        if store in text:
-            return store.title()
-
-    return None
-
-
-def is_excluded(text):
-    text = text.lower()
-
-    return any(
-        word in text
-        for word in EXCLUDED_WORDS
+    match_score = similarity(
+        small["title"],
+        large["title"]
     )
 
+    if match_score < MIN_SIMILARITY:
+        return None
 
-def priority_score(text, discount):
-    text = text.lower()
+    if not same_seller(small, large):
+        return None
 
-    score = 0
+    small_unit_price = (
+        small_price / small_qty
+    )
 
-    for word in PRIORITY_WORDS:
-        if word in text:
-            score += 10
+    large_unit_price = (
+        large_price / large_qty
+    )
 
-    if discount >= 70:
-        score += 25
+    if small_unit_price <= 0:
+        return None
 
-    if discount >= 90:
-        score += 50
+    savings = (
+        1 - (
+            large_unit_price /
+            small_unit_price
+        )
+    ) * 100
 
-    return score
+    if savings < MIN_UNIT_SAVINGS:
+        return None
+
+    return {
+        "product": large,
+        "comparison": small,
+        "savings": round(savings, 1),
+        "unit_price": round(
+            large_unit_price, 2
+        ),
+        "expected_price": round(
+            small_unit_price * large_qty, 2
+        ),
+        "similarity": round(
+            match_score, 2
+        )
+    }
 
 
-def send_discord(title, price, discount, link, store, score):
+# ======================================
+# DISCORD ALERTS
+# ======================================
+
+def send_alert(glitch):
+
     if not WEBHOOK:
-        print("Missing DISCORD_WEBHOOK_URL")
+        print(
+            "Missing DISCORD_WEBHOOK_URL"
+        )
         return False
 
-    possible_glitch = discount >= 90
-
-    if possible_glitch:
-        heading = "🚨 POSSIBLE PRICE GLITCH"
-        color = 16711680
-    elif discount >= 70:
-        heading = "🔥 HUGE DISCOUNT"
-        color = 16753920
-    else:
-        heading = "💰 DEAL ALERT"
-        color = 3066993
+    product = glitch["product"]
+    comparison = glitch["comparison"]
 
     payload = {
         "embeds": [
             {
-                "title": heading,
-                "description": title[:1000],
-                "url": link,
-                "color": color,
+                "title": (
+                    "🚨 POSSIBLE AMAZON "
+                    "MULTIPACK PRICE GLITCH"
+                ),
+                "description": product["title"],
+                "url": product["url"],
+                "color": 16711680,
                 "fields": [
                     {
-                        "name": "Store",
-                        "value": store,
+                        "name": "Multipack Price",
+                        "value": (
+                            f"${float(product['price']):.2f}"
+                        ),
                         "inline": True
                     },
                     {
-                        "name": "Reported Price",
-                        "value": f"${price:.2f}",
+                        "name": "Pack Quantity",
+                        "value": str(
+                            product["quantity"]
+                        ),
                         "inline": True
                     },
                     {
-                        "name": "Reported Discount",
-                        "value": f"{discount}% OFF",
+                        "name": "Unit Price",
+                        "value": (
+                            f"${glitch['unit_price']:.2f}"
+                        ),
                         "inline": True
                     },
                     {
-                        "name": "Priority Score",
-                        "value": str(score),
+                        "name": "Reference Listing",
+                        "value": (
+                            f"{comparison['quantity']} units "
+                            f"for ${float(comparison['price']):.2f}"
+                        ),
+                        "inline": False
+                    },
+                    {
+                        "name": "Implied Savings",
+                        "value": (
+                            f"{glitch['savings']}%"
+                        ),
                         "inline": True
+                    },
+                    {
+                        "name": "Reference-Based Value",
+                        "value": (
+                            f"${glitch['expected_price']:.2f}"
+                        ),
+                        "inline": True
+                    },
+                    {
+                        "name": "Reference Link",
+                        "value": comparison["url"],
+                        "inline": False
                     }
                 ],
                 "footer": {
                     "text": (
-                        "Unverified feed listing. "
-                        "Confirm retailer price and stock."
+                        "Possible error only. "
+                        "Verify quantity, seller, "
+                        "price, and checkout."
                     )
                 }
             }
@@ -197,101 +296,87 @@ def send_discord(title, price, discount, link, store, score):
         )
 
         response.raise_for_status()
+
+        print(
+            "Discord alert sent:",
+            product["title"]
+        )
+
         return True
 
     except requests.RequestException as error:
-        print("Discord error:", error)
+        print(
+            "Discord error:",
+            error
+        )
+
         return False
 
 
-def scan_deals():
+# ======================================
+# MAIN SCANNER
+# ======================================
+
+def scan():
+
+    products = load_products()
     seen = load_seen()
 
-    new_alerts = 0
+    print(
+        "Products loaded:",
+        len(products)
+    )
 
-    if not FEEDS:
-        print("No DEAL_FEEDS configured.")
-        print("Add RSS URLs before running live scans.")
-        return
+    alerts = 0
 
-    for feed_url in FEEDS:
-        print("Checking feed:", feed_url)
+    for i, product_a in enumerate(products):
 
-        try:
-            response = requests.get(
-                feed_url,
-                timeout=20,
-                headers={
-                    "User-Agent": "DealAlertBot/1.0"
-                }
+        for product_b in products[i + 1:]:
+
+            glitch = compare_products(
+                product_a,
+                product_b
             )
 
-            response.raise_for_status()
-
-            feed = feedparser.parse(response.content)
-
-        except Exception as error:
-            print("Feed error:", error)
-            continue
-
-        for entry in feed.entries:
-            title = entry.get("title", "")
-            summary = entry.get("summary", "")
-            link = entry.get("link", "")
-
-            text = title + " " + summary
-
-            if not link:
+            if glitch is None:
                 continue
 
-            deal_id = hashlib.sha256(
-                link.encode("utf-8")
+            product = glitch["product"]
+            comparison = glitch["comparison"]
+
+            glitch_id = hashlib.sha256(
+                (
+                    str(product.get("asin", product["url"]))
+                    + "|"
+                    + str(comparison.get(
+                        "asin", comparison["url"]
+                    ))
+                    + "|"
+                    + str(product["price"])
+                    + "|"
+                    + str(comparison["price"])
+                ).encode()
             ).hexdigest()
 
-            if deal_id in seen:
+            if glitch_id in seen:
                 continue
 
-            if is_excluded(title):
-                continue
-
-            store = get_store(text)
-
-            if not store:
-                continue
-
-            price = extract_price(text)
-            discount = extract_discount(text)
-
-            if price is None or discount is None:
-                continue
-
-            if price > MAX_PRICE:
-                continue
-
-            if discount < MIN_DISCOUNT:
-                continue
-
-            score = priority_score(text, discount)
-
-            print("MATCH:", title)
-
-            success = send_discord(
-                title,
-                price,
-                discount,
-                link,
-                store,
-                score
+            print(
+                "POTENTIAL GLITCH:",
+                product["title"]
             )
 
-            if success:
-                seen.add(deal_id)
-                new_alerts += 1
+            if send_alert(glitch):
+                seen.add(glitch_id)
+                alerts += 1
 
     save_seen(seen)
 
-    print("New matching alerts sent:", new_alerts)
+    print(
+        "New glitch alerts:",
+        alerts
+    )
 
 
 if __name__ == "__main__":
-    scan_deals()
+    scan()
