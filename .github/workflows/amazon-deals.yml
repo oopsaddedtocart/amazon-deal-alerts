@@ -31,11 +31,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests feedparser
 
-      - name: Run deal finder
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          DEAL_FEEDS: ${{ vars.DEAL_FEEDS }}
-        run: python deal_finder.py
+      - name: Run Amazon Glitch Finder
+  env:
+    DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+  run: python deal_finder.py
 
       - name: Save previously alerted deals
         run: |
