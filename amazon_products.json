@@ -1,0 +1,18 @@
+[
+  {
+    "asin": "EXAMPLE001",
+    "title": "Example BBQ Sauce 1 Pack",
+    "price": 8.99,
+    "quantity": 1,
+    "seller_id": "SELLER123",
+    "url": "https://www.amazon.com/dp/EXAMPLE001"
+  },
+  {
+    "asin": "EXAMPLE002",
+    "title": "Example BBQ Sauce 6 Pack",
+    "price": 9.99,
+    "quantity": 6,
+    "seller_id": "SELLER123",
+    "url": "https://www.amazon.com/dp/EXAMPLE002"
+  }
+]
