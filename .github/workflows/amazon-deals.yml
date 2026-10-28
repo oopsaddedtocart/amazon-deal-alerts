@@ -1,19 +1,24 @@
-name: Amazon Deal Finder
+name: Price Glitch Alerts
 
 on:
   workflow_dispatch:
+
   schedule:
-    - cron: "17 */4 * * *"
+    - cron: "*/30 * * * *"
 
 permissions:
   contents: write
+
+concurrency:
+  group: price-glitch-alerts
+  cancel-in-progress: false
 
 jobs:
   find-deals:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -21,15 +26,25 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests feedparser
+
       - name: Run deal finder
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DEAL_FEEDS: ${{ vars.DEAL_FEEDS }}
         run: python deal_finder.py
 
-      - name: Save duplicate history
+      - name: Save previously alerted deals
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add seen_deals.json
-          git diff --cached --quiet || git commit -m "Update deal history"
-          git push
+          if [ -f seen_deals.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add seen_deals.json
+            git diff --cached --quiet || (
+              git commit -m "Update seen deals" &&
+              git push
+            )
+          fi
