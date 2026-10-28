@@ -1,196 +1,297 @@
-import json
 import os
 import re
-import urllib.request
-import urllib.error
-import xml.etree.ElementTree as ET
-from pathlib import Path
-from urllib.parse import quote_plus
+import json
+import hashlib
+import requests
+import feedparser
 
-WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
-MAX_PRICE = 30.00
+MAX_PRICE = 50
 MIN_DISCOUNT = 50
-MAX_ALERTS = 10
-HISTORY_FILE = Path("seen_deals.json")
 
-FEED_URL = (
-    "https://slickdeals.net/newsearch.php?"
-    "mode=frontpage&searcharea=deals&searchin=first&rss=1"
-)
+WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; DealFinder/1.0)",
-    "Accept": "application/rss+xml, application/xml, text/xml",
-}
+# Add authorized RSS deal feeds here.
+FEEDS = [
+    url.strip()
+    for url in os.environ.get("DEAL_FEEDS", "").split(",")
+    if url.strip()
+]
+
+SEEN_FILE = "seen_deals.json"
+
+STORES = [
+    "amazon",
+    "walmart",
+    "target",
+    "home depot",
+    "lowe's",
+    "lowes",
+]
+
+PRIORITY_WORDS = [
+    "multipack",
+    "multi-pack",
+    "6 pack",
+    "12 pack",
+    "24 pack",
+    "case",
+    "bundle",
+    "household",
+    "seasoning",
+    "detergent",
+    "cleaning",
+    "candy",
+    "grocery",
+    "toy",
+]
+
+EXCLUDED_WORDS = [
+    "shirt",
+    "pants",
+    "dress",
+    "shoes",
+    "jeans",
+    "hoodie",
+]
 
 
-def fetch_feed():
-    request = urllib.request.Request(FEED_URL, headers=HEADERS)
-    with urllib.request.urlopen(request, timeout=30) as response:
-        data = response.read()
+def load_seen():
+    if not os.path.exists(SEEN_FILE):
+        return set()
 
-    root = ET.fromstring(data)
-    items = root.findall("./channel/item")
-
-    if not items:
-        raise RuntimeError(
-            "Feed loaded but no RSS items were found. "
-            "The feed format may have changed."
-        )
-
-    return items
-
-
-def load_history():
     try:
-        return set(json.loads(HISTORY_FILE.read_text()))
+        with open(SEEN_FILE, "r") as f:
+            return set(json.load(f))
     except (OSError, ValueError):
         return set()
 
 
+def save_seen(seen):
+    with open(SEEN_FILE, "w") as f:
+        json.dump(sorted(seen), f)
+
+
 def extract_price(text):
     matches = re.findall(
-        r"\$\s*([\d,]+(?:\.\d{1,2})?)", text or ""
+        r"\$\s?(\d+(?:\.\d{1,2})?)",
+        text
     )
-    prices = [
-        float(value.replace(",", ""))
-        for value in matches
-    ]
-    return min(prices) if prices else None
+
+    if not matches:
+        return None
+
+    return float(matches[0])
 
 
 def extract_discount(text):
     matches = re.findall(
-        r"(\d{1,3})\s*%\s*(?:off|discount)",
-        text or "",
-        re.IGNORECASE,
-    )
-    return max(map(int, matches)) if matches else None
-
-
-def send_discord(title, link, price, discount):
-    price_text = (
-        f"${price:.2f}" if price is not None
-        else "Price not stated"
-    )
-    discount_text = (
-        f"{discount}% advertised"
-        if discount is not None
-        else "Discount not stated"
+        r"(\d{1,3})\s?%\s*(?:off|discount)",
+        text,
+        re.IGNORECASE
     )
 
-    message = (
-        "🔎 **Potential deal candidate**\n"
-        f"**{title[:220]}**\n"
-        f"Price mentioned: {price_text}\n"
-        f"Discount: {discount_text}\n"
-        f"Source link: {link}\n"
-        "⚠️ Verify the Amazon listing and current price "
-        "before purchasing."
+    if not matches:
+        return None
+
+    return int(matches[0])
+
+
+def get_store(text):
+    text = text.lower()
+
+    for store in STORES:
+        if store in text:
+            return store.title()
+
+    return None
+
+
+def is_excluded(text):
+    text = text.lower()
+
+    return any(
+        word in text
+        for word in EXCLUDED_WORDS
     )
 
-    request = urllib.request.Request(
-        WEBHOOK,
-        data=json.dumps({"content": message}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
 
-    with urllib.request.urlopen(request, timeout=20) as response:
-        if response.status not in (200, 204):
-            raise RuntimeError(
-                f"Unexpected Discord status: {response.status}"
-            )
+def priority_score(text, discount):
+    text = text.lower()
+
+    score = 0
+
+    for word in PRIORITY_WORDS:
+        if word in text:
+            score += 10
+
+    if discount >= 70:
+        score += 25
+
+    if discount >= 90:
+        score += 50
+
+    return score
 
 
-def main():
+def send_discord(title, price, discount, link, store, score):
     if not WEBHOOK:
-        raise SystemExit("Missing DISCORD_WEBHOOK_URL secret.")
+        print("Missing DISCORD_WEBHOOK_URL")
+        return False
 
-    print("Checking deal feed...")
-    history = load_history()
+    possible_glitch = discount >= 90
+
+    if possible_glitch:
+        heading = "🚨 POSSIBLE PRICE GLITCH"
+        color = 16711680
+    elif discount >= 70:
+        heading = "🔥 HUGE DISCOUNT"
+        color = 16753920
+    else:
+        heading = "💰 DEAL ALERT"
+        color = 3066993
+
+    payload = {
+        "embeds": [
+            {
+                "title": heading,
+                "description": title[:1000],
+                "url": link,
+                "color": color,
+                "fields": [
+                    {
+                        "name": "Store",
+                        "value": store,
+                        "inline": True
+                    },
+                    {
+                        "name": "Reported Price",
+                        "value": f"${price:.2f}",
+                        "inline": True
+                    },
+                    {
+                        "name": "Reported Discount",
+                        "value": f"{discount}% OFF",
+                        "inline": True
+                    },
+                    {
+                        "name": "Priority Score",
+                        "value": str(score),
+                        "inline": True
+                    }
+                ],
+                "footer": {
+                    "text": (
+                        "Unverified feed listing. "
+                        "Confirm retailer price and stock."
+                    )
+                }
+            }
+        ]
+    }
 
     try:
-        items = fetch_feed()
-    except Exception as error:
-        print(f"FEED ERROR: {type(error).__name__}: {error}")
-        raise SystemExit(1)
+        response = requests.post(
+            WEBHOOK,
+            json=payload,
+            timeout=20
+        )
 
-    print(f"Feed items retrieved: {len(items)}")
+        response.raise_for_status()
+        return True
 
-    sent = 0
-    seen_count = 0
-    amazon_count = 0
-    price_count = 0
-    discount_count = 0
+    except requests.RequestException as error:
+        print("Discord error:", error)
+        return False
 
-    for item in items:
-        title = item.findtext("title", "").strip()
-        link = item.findtext("link", "").strip()
-        description = item.findtext("description", "")
-        guid = item.findtext("guid", "").strip() or link
 
-        if not guid or guid in history:
-            seen_count += 1
-            continue
+def scan_deals():
+    seen = load_seen()
 
-        text = f"{title} {description} {link}"
+    new_alerts = 0
 
-        if "amazon" not in text.lower():
-            continue
+    if not FEEDS:
+        print("No DEAL_FEEDS configured.")
+        print("Add RSS URLs before running live scans.")
+        return
 
-        amazon_count += 1
-
-        price = extract_price(title)
-        if price is None:
-            price = extract_price(description)
-
-        discount = extract_discount(text)
-
-        # Only reject a stated discount below 50%.
-        # Missing discounts remain unverified candidates.
-        if discount is not None and discount < MIN_DISCOUNT:
-            continue
-
-        if price is not None and (
-            price <= 0 or price > MAX_PRICE
-        ):
-            continue
-
-        # Avoid treating an item with neither price nor
-        # discount as a useful deal candidate.
-        if price is None and discount is None:
-            continue
-
-        price_count += 1
-        if discount is not None:
-            discount_count += 1
-
-        if sent >= MAX_ALERTS:
-            print("Alert limit reached.")
-            break
+    for feed_url in FEEDS:
+        print("Checking feed:", feed_url)
 
         try:
-            send_discord(title, link, price, discount)
+            response = requests.get(
+                feed_url,
+                timeout=20,
+                headers={
+                    "User-Agent": "DealAlertBot/1.0"
+                }
+            )
+
+            response.raise_for_status()
+
+            feed = feedparser.parse(response.content)
+
         except Exception as error:
-            print(f"DISCORD ERROR: {error}")
-            raise
+            print("Feed error:", error)
+            continue
 
-        history.add(guid)
-        sent += 1
-        print(f"Alert sent: {title}")
+        for entry in feed.entries:
+            title = entry.get("title", "")
+            summary = entry.get("summary", "")
+            link = entry.get("link", "")
 
-    HISTORY_FILE.write_text(
-        json.dumps(sorted(history), indent=2)
-    )
+            text = title + " " + summary
 
-    print("--- Summary ---")
-    print(f"Already seen: {seen_count}")
-    print(f"Amazon-related items: {amazon_count}")
-    print(f"Price/budget candidates: {price_count}")
-    print(f"Candidates with stated 50%+ discounts: {discount_count}")
-    print(f"Discord alerts sent: {sent}")
+            if not link:
+                continue
+
+            deal_id = hashlib.sha256(
+                link.encode("utf-8")
+            ).hexdigest()
+
+            if deal_id in seen:
+                continue
+
+            if is_excluded(title):
+                continue
+
+            store = get_store(text)
+
+            if not store:
+                continue
+
+            price = extract_price(text)
+            discount = extract_discount(text)
+
+            if price is None or discount is None:
+                continue
+
+            if price > MAX_PRICE:
+                continue
+
+            if discount < MIN_DISCOUNT:
+                continue
+
+            score = priority_score(text, discount)
+
+            print("MATCH:", title)
+
+            success = send_discord(
+                title,
+                price,
+                discount,
+                link,
+                store,
+                score
+            )
+
+            if success:
+                seen.add(deal_id)
+                new_alerts += 1
+
+    save_seen(seen)
+
+    print("New matching alerts sent:", new_alerts)
 
 
 if __name__ == "__main__":
-    main()
+    scan_deals()
