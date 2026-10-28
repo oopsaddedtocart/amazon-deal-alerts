@@ -1,8 +1,7 @@
-name: Price Glitch Alerts
+name: Amazon Multipack Glitch Finder
 
 on:
   workflow_dispatch:
-
   schedule:
     - cron: "*/30 * * * *"
 
@@ -10,11 +9,11 @@ permissions:
   contents: write
 
 concurrency:
-  group: price-glitch-alerts
+  group: amazon-multipack-glitches
   cancel-in-progress: false
 
 jobs:
-  find-deals:
+  scan:
     runs-on: ubuntu-latest
 
     steps:
@@ -27,23 +26,21 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests feedparser
+        run: pip install requests
 
-      - name: Run Amazon Glitch Finder
-  env:
-    DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-  run: python deal_finder.py
+      - name: Find Amazon glitches
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python deal_finder.py
 
-      - name: Save previously alerted deals
+      - name: Save alerted deals
         run: |
-          if [ -f seen_deals.json ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add seen_deals.json
-            git diff --cached --quiet || (
-              git commit -m "Update seen deals" &&
-              git push
-            )
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add seen_glitches.json
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Update glitch alerts"
+            git push
           fi
