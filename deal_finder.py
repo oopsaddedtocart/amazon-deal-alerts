@@ -1,289 +1,159 @@
+import csv
+import json
 import os
 import re
-import json
 import hashlib
-import requests
 from difflib import SequenceMatcher
+from pathlib import Path
 
-# ======================================
+import requests
+
 # SETTINGS
-# ======================================
+DATA = Path("amazon_products.csv")
+SEEN = Path("seen_glitches.json")
+
+WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 MAX_PRICE = 50.00
+MIN_SAVINGS = 0.60
 
-# Multipack unit price must be at least
-# 60% cheaper than comparison listing.
-MIN_UNIT_SAVINGS = 60
-
-# Similarity needed for matching products
-MIN_SIMILARITY = 0.80
-
-WEBHOOK = os.environ.get(
-    "DISCORD_WEBHOOK_URL", ""
-)
-
-DATA_FILE = "amazon_products.json"
-SEEN_FILE = "seen_glitches.json"
-
-PACK_SIZES = [
-    1, 2, 4, 6, 8, 10,
-    12, 24, 36, 48
-]
-
-# ======================================
 # PRODUCT MATCHING
-# ======================================
 
-def clean_title(title):
+def normalize(title):
     title = title.lower()
 
     title = re.sub(
-        r"\b\d+\s?[- ]?(?:pack|pk|count|ct)\b",
+        r"\b(?:pack of\s*\d+|\d+\s*[- ]?pack|\d+\s*(?:count|ct|pk))\b",
         " ",
         title
     )
 
-    title = re.sub(
-        r"[^a-z0-9 ]",
-        " ",
-        title
-    )
-
-    return " ".join(title.split())
-
-
-def similarity(a, b):
-    return SequenceMatcher(
-        None,
-        clean_title(a),
-        clean_title(b)
-    ).ratio()
-
-
-def same_seller(a, b):
-    seller_a = str(
-        a.get("seller_id", "")
-    ).strip()
-
-    seller_b = str(
-        b.get("seller_id", "")
-    ).strip()
-
-    return (
-        bool(seller_a)
-        and bool(seller_b)
-        and seller_a == seller_b
+    return " ".join(
+        re.findall(r"[a-z0-9]+", title)
     )
 
 
-# ======================================
-# LOAD PRODUCTS
-# ======================================
+def parse_row(row):
+    try:
+        row["price"] = float(row["price"])
+        row["quantity"] = int(row["quantity"])
+
+        row["sold_by_amazon"] = (
+            row["sold_by_amazon"].strip().lower() == "true"
+        )
+
+        row["missing_image"] = (
+            row.get("missing_image", "").strip().lower() == "true"
+        )
+
+        if not (
+            row["price"] > 0
+            and row["quantity"] > 0
+            and row["asin"]
+            and row["title"]
+            and row["url"]
+        ):
+            return None
+
+        return row
+
+    except (ValueError, KeyError, TypeError):
+        return None
+
 
 def load_products():
-    if not os.path.exists(DATA_FILE):
-        print(
-            "No product data found. "
-            "Add amazon_products.json."
-        )
+    if not DATA.exists():
+        print("No product data source configured.")
         return []
 
-    with open(DATA_FILE, "r") as file:
-        products = json.load(file)
+    with DATA.open(
+        newline="",
+        encoding="utf-8"
+    ) as file:
 
-    if not isinstance(products, list):
-        raise ValueError(
-            "Product data must be a list."
-        )
-
-    return products
-
-
-def load_seen():
-    if not os.path.exists(SEEN_FILE):
-        return set()
-
-    try:
-        with open(SEEN_FILE, "r") as file:
-            return set(json.load(file))
-    except (OSError, ValueError):
-        return set()
+        return [
+            product
+            for row in csv.DictReader(file)
+            if (product := parse_row(row))
+        ]
 
 
-def save_seen(seen):
-    with open(SEEN_FILE, "w") as file:
-        json.dump(sorted(seen), file, indent=2)
+# COMPARE MULTIPACKS
 
+def compare(a, b):
 
-# ======================================
-# GLITCH DETECTION
-# ======================================
-
-def compare_products(a, b):
-
-    try:
-        price_a = float(a["price"])
-        price_b = float(b["price"])
-
-        qty_a = int(a["quantity"])
-        qty_b = int(b["quantity"])
-
-    except (KeyError, ValueError, TypeError):
+    # Only products sold by Amazon
+    if not (
+        a["sold_by_amazon"]
+        and b["sold_by_amazon"]
+    ):
         return None
 
-    if min(price_a, price_b) <= 0:
+    if a["quantity"] == b["quantity"]:
         return None
 
-    if min(qty_a, qty_b) <= 0:
-        return None
-
-    # Compare smaller and larger packs.
-    if qty_a <= qty_b:
-        small, large = a, b
-        small_price = price_a
-        large_price = price_b
-        small_qty = qty_a
-        large_qty = qty_b
-    else:
-        small, large = b, a
-        small_price = price_b
-        large_price = price_a
-        small_qty = qty_b
-        large_qty = qty_a
-
-    if large_price > MAX_PRICE:
-        return None
-
-    match_score = similarity(
-        small["title"],
-        large["title"]
+    small, large = sorted(
+        (a, b),
+        key=lambda product: product["quantity"]
     )
 
-    if match_score < MIN_SIMILARITY:
+    if large["price"] > MAX_PRICE:
         return None
 
-    if not same_seller(small, large):
+    match = SequenceMatcher(
+        None,
+        normalize(small["title"]),
+        normalize(large["title"])
+    ).ratio()
+
+    if match < 0.88:
         return None
 
     small_unit_price = (
-        small_price / small_qty
+        small["price"] / small["quantity"]
     )
 
     large_unit_price = (
-        large_price / large_qty
+        large["price"] / large["quantity"]
     )
 
-    if small_unit_price <= 0:
-        return None
-
     savings = (
-        1 - (
-            large_unit_price /
-            small_unit_price
-        )
-    ) * 100
+        1 - large_unit_price / small_unit_price
+    )
 
-    if savings < MIN_UNIT_SAVINGS:
+    if savings < MIN_SAVINGS:
         return None
 
-    return {
-        "product": large,
-        "comparison": small,
-        "savings": round(savings, 1),
-        "unit_price": round(
-            large_unit_price, 2
-        ),
-        "expected_price": round(
-            small_unit_price * large_qty, 2
-        ),
-        "similarity": round(
-            match_score, 2
-        )
-    }
+    return small, large, savings
 
 
-# ======================================
-# DISCORD ALERTS
-# ======================================
+# DISCORD NOTIFICATIONS
 
-def send_alert(glitch):
+def send_alert(small, large, savings):
 
     if not WEBHOOK:
-        print(
-            "Missing DISCORD_WEBHOOK_URL"
-        )
+        print("Discord webhook missing.")
         return False
 
-    product = glitch["product"]
-    comparison = glitch["comparison"]
+    description = (
+        f"**{large['title']}**\n\n"
+        f"📦 Pack Quantity: {large['quantity']}\n"
+        f"💰 Multipack Price: ${large['price']:.2f}\n"
+        f"📊 Reference Price: ${small['price']:.2f}\n"
+        f"🔥 Unit Price Savings: {savings:.0%}\n"
+        f"🖼️ Missing Image: {large['missing_image']}\n\n"
+        f"🛒 [BUY MULTIPACK]({large['url']})\n"
+        f"🔎 [COMPARE LISTING]({small['url']})\n\n"
+        "⚠️ Potential glitch only. "
+        "Verify seller, quantity, and checkout price."
+    )
 
     payload = {
         "embeds": [
             {
-                "title": (
-                    "🚨 POSSIBLE AMAZON "
-                    "MULTIPACK PRICE GLITCH"
-                ),
-                "description": product["title"],
-                "url": product["url"],
-                "color": 16711680,
-                "fields": [
-                    {
-                        "name": "Multipack Price",
-                        "value": (
-                            f"${float(product['price']):.2f}"
-                        ),
-                        "inline": True
-                    },
-                    {
-                        "name": "Pack Quantity",
-                        "value": str(
-                            product["quantity"]
-                        ),
-                        "inline": True
-                    },
-                    {
-                        "name": "Unit Price",
-                        "value": (
-                            f"${glitch['unit_price']:.2f}"
-                        ),
-                        "inline": True
-                    },
-                    {
-                        "name": "Reference Listing",
-                        "value": (
-                            f"{comparison['quantity']} units "
-                            f"for ${float(comparison['price']):.2f}"
-                        ),
-                        "inline": False
-                    },
-                    {
-                        "name": "Implied Savings",
-                        "value": (
-                            f"{glitch['savings']}%"
-                        ),
-                        "inline": True
-                    },
-                    {
-                        "name": "Reference-Based Value",
-                        "value": (
-                            f"${glitch['expected_price']:.2f}"
-                        ),
-                        "inline": True
-                    },
-                    {
-                        "name": "Reference Link",
-                        "value": comparison["url"],
-                        "inline": False
-                    }
-                ],
-                "footer": {
-                    "text": (
-                        "Possible error only. "
-                        "Verify quantity, seller, "
-                        "price, and checkout."
-                    )
-                }
+                "title": "🚨 AMAZON MULTIPACK GLITCH ALERT",
+                "description": description,
+                "color": 16711680
             }
         ]
     }
@@ -297,35 +167,31 @@ def send_alert(glitch):
 
         response.raise_for_status()
 
-        print(
-            "Discord alert sent:",
-            product["title"]
-        )
+        print("Discord alert sent!")
 
         return True
 
     except requests.RequestException as error:
-        print(
-            "Discord error:",
-            error
-        )
-
+        print("Discord error:", error)
         return False
 
 
-# ======================================
 # MAIN SCANNER
-# ======================================
 
-def scan():
+def main():
 
     products = load_products()
-    seen = load_seen()
 
-    print(
-        "Products loaded:",
-        len(products)
-    )
+    print("Products loaded:", len(products))
+
+    try:
+        seen = (
+            set(json.loads(SEEN.read_text()))
+            if SEEN.exists()
+            else set()
+        )
+    except (ValueError, OSError):
+        seen = set()
 
     alerts = 0
 
@@ -333,28 +199,22 @@ def scan():
 
         for product_b in products[i + 1:]:
 
-            glitch = compare_products(
+            result = compare(
                 product_a,
                 product_b
             )
 
-            if glitch is None:
+            if result is None:
                 continue
 
-            product = glitch["product"]
-            comparison = glitch["comparison"]
+            small, large, savings = result
 
             glitch_id = hashlib.sha256(
                 (
-                    str(product.get("asin", product["url"]))
-                    + "|"
-                    + str(comparison.get(
-                        "asin", comparison["url"]
-                    ))
-                    + "|"
-                    + str(product["price"])
-                    + "|"
-                    + str(comparison["price"])
+                    f"{small['asin']}|"
+                    f"{large['asin']}|"
+                    f"{small['price']}|"
+                    f"{large['price']}"
                 ).encode()
             ).hexdigest()
 
@@ -363,20 +223,23 @@ def scan():
 
             print(
                 "POTENTIAL GLITCH:",
-                product["title"]
+                large["title"]
             )
 
-            if send_alert(glitch):
+            if send_alert(
+                small,
+                large,
+                savings
+            ):
                 seen.add(glitch_id)
                 alerts += 1
 
-    save_seen(seen)
-
-    print(
-        "New glitch alerts:",
-        alerts
+    SEEN.write_text(
+        json.dumps(sorted(seen), indent=2)
     )
+
+    print("New glitch alerts:", alerts)
 
 
 if __name__ == "__main__":
-    scan()
+    main()
